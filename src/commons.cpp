@@ -72,6 +72,12 @@ bool process_frame(Frame* frame) {
                     // check for known status/validation message (to track some statistics)
                     return ((status_code & 0x07) == 0); 
                 }
+                if (transponder_id == 0) {
+                    // an all-zero payload decodes to id 0 with a zero tail, so an
+                    // unmodulated carrier passes the (tail == 0) check and would be
+                    // reported as a phantom transponder 0. Never a real id.
+                    return true;
+                }
                 // status byte:
                 // https://www.rctech.net/forum/showpost.php?p=16244070&postcount=1171
                 // RC4 hybrid and "recent" RC3 indicate status messages in lower 3 bits (0x07 mask)
@@ -88,6 +94,13 @@ bool process_frame(Frame* frame) {
                 }
                 // at this point decoding was success; if status byte indicates
                 // non-transponder message, it should not screw decoded statistics
+                return true;
+            }
+            // Vostok clones share the RC3 preamble but not the payload format;
+            // decode_rc3 rejects them on the tail check. Try them here, after
+            // RC3 had its chance, so existing transponders are unaffected.
+            if (decode_vostok(softbits, &transponder_id)) {
+                passing_detector.append(frame, transponder_id);
                 return true;
             }
         }

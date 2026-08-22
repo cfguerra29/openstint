@@ -105,6 +105,51 @@ int decode_rc3(const uint8_t *softbits, uint32_t *transponder_id, uint8_t *statu
     return (trail == 0);
 }
 
+// Vostok transponders reuse the RC3 preamble but carry a completely different
+// payload: no convolutional code at all, just the plain 24 bit id sent twice
+// with running XOR checksums. Frame layout of the 80 payload symbols, after
+// differential (DBPSK) demodulation, as 10 bytes:
+//
+//   byte 0-1  header (0x631A on the unit this was reverse engineered from)
+//   byte 2-4  transponder id, 24 bit big-endian
+//   byte 5    running XOR of bytes 0..4
+//   byte 6-8  transponder id again
+//   byte 9    running XOR of bytes 0..8
+//
+// Verified against a live capture: 15 consecutive frames of a Vostok labelled
+// 5112266 decoded bit-identical, id and both checksums matching.
+//
+// The id must appear twice and both checksums must hold: 40 bits of constraint,
+// so a false positive is ~2^-40. That is far stronger than the 8 bit tail check
+// RC3 relies on, which is why this may safely run as a fallback after decode_rc3.
+int decode_vostok(const uint8_t *softbits, uint32_t *transponder_id) {
+    uint8_t bytes[10] = {0};
+    int prev_sym = 0;
+    for (int i = 0; i < 80; i++) {
+        const int sym = (softbits[i] > 127) ? 1 : 0;
+        const int bit = sym ^ prev_sym;   // differential decode
+        prev_sym = sym;
+        bytes[i / 8] = static_cast<uint8_t>((bytes[i / 8] << 1) | bit);
+    }
+
+    const uint32_t id1 = (static_cast<uint32_t>(bytes[2]) << 16) |
+                         (static_cast<uint32_t>(bytes[3]) << 8) | bytes[4];
+    const uint32_t id2 = (static_cast<uint32_t>(bytes[6]) << 16) |
+                         (static_cast<uint32_t>(bytes[7]) << 8) | bytes[8];
+    if (id1 != id2) { return 0; }
+
+    uint8_t xsum = 0;
+    for (int i = 0; i < 5; i++) { xsum ^= bytes[i]; }
+    if (xsum != bytes[5]) { return 0; }
+    for (int i = 5; i < 9; i++) { xsum ^= bytes[i]; }
+    if (xsum != bytes[9]) { return 0; }
+
+    if (id1 == 0 || id1 >= 10000000) { return 0; }
+
+    *transponder_id = id1;
+    return 1;
+}
+
 void AmbRcBlacklist::process(uint64_t timestamp, uint8_t status_code, uint32_t transponder_id) {
     // not a candidate status/validation message:
     if ((status_code & 0xf8) != 0xf8) return; // not an AmbRc message

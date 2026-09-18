@@ -78,6 +78,14 @@ bool process_frame(Frame* frame) {
                 return true;
             }
             if (decode_rc3(softbits, &transponder_id, &status_code)) {
+                // An unmodulated carrier demodulates to an all-zero payload, which
+                // decodes to id 0 with a zero tail. That tail is the only validation
+                // RC3 has, so the carrier is accepted and reaches passing_detector as
+                // a phantom transponder. Vostok units emit idle carrier between data
+                // frames, so this happens on live tracks. No transponder carries id 0.
+                if (transponder_id == 0) {
+                    return true;
+                }
                 if (transponder_id >= 10000000) { // not a 7-digit transponder for sure
                     // check for known status/validation message (to track some statistics)
                     return ((status_code & 0x07) == 0); 
